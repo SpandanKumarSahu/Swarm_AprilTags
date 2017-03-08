@@ -145,7 +145,18 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
     cv_ptr->header.frame_id = sensor_frame_id_;
 
   AprilTagDetectionArray tag_detection_array;
- 
+
+  /*
+    The fucking focal length wasn't set and the smarty MIT guys had set it by default to 600,600.
+    So we were fooled to think that they had done something extra-ordinarily genious. Sigh!
+    
+    I am hard-coding it for the time being. If any smart-ass feels he can do better, the code is all yours.
+   */
+
+  fx=fy=600; // Camera focal length in pixels
+  px=640/2; // Camera principal point.
+  py=480/2;
+
   BOOST_FOREACH(AprilTags::TagDetection detection, detections){
     std::map<int, AprilTagDescription>::const_iterator description_itr = descriptions_.find(detection.id);
     if(description_itr == descriptions_.end()){
@@ -169,10 +180,10 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
     Eigen::Matrix3d fixed_rot = F*rotation;
     double yaw, pitch, roll;
     wRo_to_euler(fixed_rot, yaw, pitch, roll);
-
+    
     AprilTagDetection tag_detection;
     tag_detection.id=detection.id;
-    //tag_detection.pose.header=cv_ptr->header;
+    tag_detection.pose.header=cv_ptr->header;
     tag_detection.pose.pose.position.x=translation(0);
     tag_detection.pose.pose.position.y=translation(1);
     tag_detection.pose.pose.position.z=translation(2);

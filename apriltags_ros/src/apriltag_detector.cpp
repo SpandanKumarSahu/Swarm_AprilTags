@@ -12,6 +12,47 @@
 #include <AprilTags/Tag36h9.h>
 #include <AprilTags/Tag36h11.h>
 #include <XmlRpcException.h>
+#include <bits/stdc++.h>
+
+// utility function to provide current system time (used below in
+// determining frame rate at which images are being processed)
+double tic() {
+  struct timeval t;
+  gettimeofday(&t, NULL);
+  return ((double)t.tv_sec + ((double)t.tv_usec)/1000000.);
+}
+
+
+#include <cmath>
+
+#ifndef PI
+const double PI = 3.14159265358979323846;
+#endif
+const double TWOPI = 2.0*PI;
+
+/**
+ * Normalize angle to be within the interval [-pi,pi].
+ */
+inline double standardRad(double t) {
+  if (t >= 0.) {
+    t = fmod(t+PI, TWOPI) - PI;
+  } else {
+    t = fmod(t-PI, -TWOPI) + PI;
+  }
+  return t;
+}
+
+/**
+ * Convert rotation matrix to Euler angles
+ */
+void wRo_to_euler(const Eigen::Matrix3d& wRo, double& yaw, double& pitch, double& roll) {
+    yaw = standardRad(atan2(wRo(1,0), wRo(0,0)));
+    double c = cos(yaw);
+    double s = sin(yaw);
+    pitch = standardRad(atan2(-wRo(2,0), wRo(0,0)*c + wRo(1,0)*s));
+    roll  = standardRad(atan2(wRo(0,2)*s - wRo(1,2)*c, -wRo(0,1)*s + wRo(1,1)*c));
+}
+
 
 namespace apriltags_ros{
 
@@ -60,9 +101,7 @@ AprilTagDetector::AprilTagDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh): i
 
   tag_detector_= boost::shared_ptr<AprilTags::TagDetector>(new AprilTags::TagDetector(*tag_codes));
   image_sub_ = it_.subscribeCamera("usb_cam/image_raw", 1, &AprilTagDetector::imageCb, this);
-  image_pub_ = it_.advertise("tag_detections_image", 1);
   detections_pub_ = nh.advertise<AprilTagDetectionArray>("tag_detections", 1);
-  pose_pub_ = nh.advertise<geometry_msgs::PoseArray>("tag_detections_pose", 1);
 }
 AprilTagDetector::~AprilTagDetector(){
   image_sub_.shutdown();
@@ -81,7 +120,7 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
   cv::cvtColor(cv_ptr->image, gray, CV_BGR2GRAY);
   std::vector<AprilTags::TagDetection>	detections = tag_detector_->extractTags(gray);
   ROS_DEBUG("%d tag detected", (int)detections.size());
-
+  
   double fx;
   double fy;
   double px;
@@ -106,47 +145,46 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
     cv_ptr->header.frame_id = sensor_frame_id_;
 
   AprilTagDetectionArray tag_detection_array;
-  geometry_msgs::PoseArray tag_pose_array;
-  tag_pose_array.header = cv_ptr->header;
-
+ 
   BOOST_FOREACH(AprilTags::TagDetection detection, detections){
     std::map<int, AprilTagDescription>::const_iterator description_itr = descriptions_.find(detection.id);
     if(description_itr == descriptions_.end()){
       ROS_WARN_THROTTLE(10.0, "Found tag: %d, but no description was found for it", detection.id);
       continue;
     }
+    Eigen::Vector3d translation;
+    Eigen::Matrix3d rotation;
+    
     AprilTagDescription description = description_itr->second;
     double tag_size = description.size();
 
-    detection.draw(cv_ptr->image);
-    Eigen::Matrix4d transform = detection.getRelativeTransform(tag_size, fx, fy, px, py);
-    Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
-    Eigen::Quaternion<double> rot_quaternion = Eigen::Quaternion<double>(rot);
+    detection.getRelativeTranslationRotation(tag_size, fx, fy, px, py,
+                                             translation, rotation);
 
-    geometry_msgs::PoseStamped tag_pose;
-    tag_pose.pose.position.x = transform(0, 3);
-    tag_pose.pose.position.y = transform(1, 3);
-    tag_pose.pose.position.z = transform(2, 3);
-    tag_pose.pose.orientation.x = rot_quaternion.x();
-    tag_pose.pose.orientation.y = rot_quaternion.y();
-    tag_pose.pose.orientation.z = rot_quaternion.z();
-    tag_pose.pose.orientation.w = rot_quaternion.w();
-    tag_pose.header = cv_ptr->header;
+    Eigen::Matrix3d F;
+    F <<
+      1, 0,  0,
+      0,  -1,  0,
+      0,  0,  1;
+    Eigen::Matrix3d fixed_rot = F*rotation;
+    double yaw, pitch, roll;
+    wRo_to_euler(fixed_rot, yaw, pitch, roll);
 
     AprilTagDetection tag_detection;
-    tag_detection.pose = tag_pose;
-    tag_detection.id = detection.id;
-    tag_detection.size = tag_size;
-    tag_detection_array.detections.push_back(tag_detection);
-    tag_pose_array.poses.push_back(tag_pose.pose);
+    tag_detection.id=detection.id;
+    //tag_detection.pose.header=cv_ptr->header;
+    tag_detection.pose.pose.position.x=translation(0);
+    tag_detection.pose.pose.position.y=translation(1);
+    tag_detection.pose.pose.position.z=translation(2);
+    tag_detection.pose.pose.orientation.x=yaw;
+    tag_detection.pose.pose.orientation.y=pitch;
+    tag_detection.pose.pose.orientation.x=roll;
+    tag_detection.pose.pose.orientation.w=0; // I don't know about this.
 
-    tf::Stamped<tf::Transform> tag_transform;
-    tf::poseStampedMsgToTF(tag_pose, tag_transform);
-    tf_pub_.sendTransform(tf::StampedTransform(tag_transform, tag_transform.stamp_, tag_transform.frame_id_, description.frame_name()));
+    tag_detection_array.detections.push_back(tag_detection);
+    
   }
   detections_pub_.publish(tag_detection_array);
-  pose_pub_.publish(tag_pose_array);
-  image_pub_.publish(cv_ptr->toImageMsg());
 }
 
 
